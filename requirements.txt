@@ -1,1 +1,14 @@
-pip install opencv-python face_recognition numpy
+python -m venv venv
+.\venv\Scripts\activate
+.\310venv\Scripts\activate
+pip install cmake
+
+pip install opencv-python mediapipe scikit-learn numpy
+
+pip
+
+pip install --upgrade pip setuptools wheel
+pip install cmake dlib
+pip install face_recognition opencv-python pillow numpy
+pip install opencv-python
+pip install 
