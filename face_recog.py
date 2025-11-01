@@ -1,15 +1,25 @@
+import cv2
 import face_recognition
 import numpy as np
 
 
 def encode_face(frame):
-    rgb_frame = frame[:, :, ::-1]
+    # Convert ke RGB
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    # Deteksi wajah
     face_locations = face_recognition.face_locations(rgb_frame)
-    if not face_locations:
+
+    if len(face_locations) != 1:
+        return None, None  # Harus 1 wajah saja
+
+    # Ambil encoding
+    encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+    if len(encodings) == 0:
         return None, None
 
-    encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-    return encodings[0], face_locations
+    return encodings[0], face_locations[0]
 
 
 def recognize_faces(rgb_small_frame, known_encodings, known_names, known_guest_counts):

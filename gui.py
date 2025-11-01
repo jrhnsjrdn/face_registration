@@ -50,13 +50,13 @@ class FaceApp:
             messagebox.showwarning("Invalid", "Isi nama & jumlah tamu valid!")
             return
 
-        encoding, _ = encode_face(frame)
+        encoding, face = encode_face(frame)
         if encoding is None:
             messagebox.showwarning("No Face", "Tidak ada wajah terdeteksi!")
             return
 
         save_face_to_db(name, int(count), encoding)
-        self.reload_faces()
+        self.root.after(500, self.reload_faces)
         messagebox.showinfo("Success", "Wajah berhasil disimpan!")
         self.name_entry.delete(0, tk.END)
         self.guest_entry.delete(0, tk.END)
@@ -64,20 +64,28 @@ class FaceApp:
 
     def stream_camera(self):
         while True:
-            frame = get_frame()
-            if frame is None: continue
+            try:
+                frame = get_frame()
+                if frame is None:
+                    continue
 
-            small = cv2.resize(frame, (0, 0), fx=0.4, fy=0.4)
-            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+                small = cv2.resize(frame, (0, 0), fx=0.4, fy=0.4)
+                rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-            locs, names, guests = recognize_faces(rgb, self.known_encodings, self.known_names, self.known_guests)
+                locs, names, guests = recognize_faces(
+                    rgb, self.known_encodings, self.known_names, self.known_guests
+                )
 
-            for (top, right, bottom, left), name, g in zip(locs, names, guests):
-                top, right, bottom, left = int(top / 0.4), int(right / 0.4), int(bottom / 0.4), int(left / 0.4)
-                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                label = f"{name} ({g})" if name != "Unknown" else "Unknown"
-                cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                for (top, right, bottom, left), name, g in zip(locs, names, guests):
+                    top, right, bottom, left = int(top / 0.4), int(right / 0.4), int(bottom / 0.4), int(left / 0.4)
+                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                    label = f"{name} ({g})" if name != "Unknown" else "Unknown"
+                    cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-            img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-            self.video_label.config(image=img)
-            self.video_label.image = img
+                img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+                self.video_label.config(image=img)
+                self.video_label.image = img
+
+            except Exception as e:
+                print("[ERROR STREAM]", e)
+                continue
