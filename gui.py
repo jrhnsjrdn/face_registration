@@ -3,7 +3,7 @@ from tkinter import messagebox
 from PIL import Image, ImageTk
 import cv2
 import threading
-from database import save_face_to_db, load_registered_faces
+from database import save_face_to_db, load_registered_faces, get_dashboard_stats, init_db
 from face_recog import encode_face, recognize_faces
 from camera import get_frame, release_cam
 import numpy as np
@@ -11,13 +11,30 @@ import numpy as np
 
 class FaceApp:
     def __init__(self, root):
+        self.on_close = None
         self.root = root
         self.root.title("Face Registration & Recognition")
         self.root.geometry("800x650")
 
+        # Init DB (IMPORTANT)
+        init_db()
+
+        # Dashboard Frame
+        self.dashboard_frame = tk.Frame(root, pady=10)
+        self.dashboard_frame.pack()
+
+        self.total_people_label = tk.Label(self.dashboard_frame, text="Total Tamu Terdaftar: 0", font=("Arial", 12),
+                                           fg="blue")
+        self.total_people_label.grid(row=0, column=0, padx=10)
+
+        self.total_guest_label = tk.Label(self.dashboard_frame, text="Total Undangan Keseluruhan: 0",
+                                          font=("Arial", 12), fg="green")
+        self.total_guest_label.grid(row=0, column=1, padx=10)
+
         self.video_label = tk.Label(root)
         self.video_label.pack()
 
+        # Input Form
         tk.Label(root, text="Nama Tamu:").pack()
         self.name_entry = tk.Entry(root, width=30)
         self.name_entry.pack()
@@ -30,11 +47,21 @@ class FaceApp:
         tk.Button(root, text="📸 Capture & Save", bg="green", fg="white",
                   command=self.capture_face).pack(pady=10)
 
+        # Load face data
         self.known_encodings, self.known_names, self.known_guests = load_registered_faces()
+        self.update_dashboard()
 
-        self.thread = threading.Thread(target=self.stream_camera)
-        self.thread.daemon = True
+        # Start camera thread
+        self.thread = threading.Thread(target=self.stream_camera, daemon=True)
         self.thread.start()
+
+        # Proper exit handler
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def update_dashboard(self):
+        total_people, total_guests = get_dashboard_stats()
+        self.total_people_label.config(text=f"Total Tamu Terdaftar: {total_people}")
+        self.total_guest_label.config(text=f"Total Tamu Undangan Keseluruhan: {total_guests}")
 
     def reload_faces(self):
         self.known_encodings, self.known_names, self.known_guests = load_registered_faces()
@@ -57,6 +84,7 @@ class FaceApp:
 
         save_face_to_db(name, int(count), encoding)
         self.root.after(500, self.reload_faces)
+        self.root.after(500, self.update_dashboard)
         messagebox.showinfo("Success", "Wajah berhasil disimpan!")
         self.name_entry.delete(0, tk.END)
         self.guest_entry.delete(0, tk.END)

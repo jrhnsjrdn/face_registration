@@ -12,7 +12,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         encoding TEXT NOT NULL,
-        guest_count INTEGER DEFAULT 1
+        guest_count INTEGER DEFAULT 1,
+        checkin_time DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
     conn.commit()
@@ -47,3 +48,17 @@ def save_face_to_db(name, guest_count, encoding):
     conn.commit()
     conn.close()
     print(f"[DB] Saved face {name}, guest {guest_count}")
+
+def get_dashboard_stats():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*), SUM(guest_count) FROM registered_faces")
+    row = cursor.fetchone()
+    conn.close()
+
+    total_registered = row[0] or 0
+    total_guests = row[1] or 0
+
+    return total_registered, total_guests
+
