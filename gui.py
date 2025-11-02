@@ -5,7 +5,7 @@ import cv2
 import threading
 from database import save_face_to_db, load_registered_faces, get_dashboard_stats, init_db
 from face_recog import encode_face, recognize_faces
-from camera import get_frame, start_camera
+from camera import get_frame, start_camera, stop_camera
 
 
 class FaceApp:
@@ -127,3 +127,7 @@ class FaceApp:
             except Exception as e:
                 print("[ERROR STREAM]", e)
                 continue
+
+    def on_close(self):
+        stop_camera()
+        self.root.destroy()

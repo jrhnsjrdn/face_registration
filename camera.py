@@ -1,33 +1,44 @@
+import cv2
 import threading
 import time
 
-import cv2
-
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FPS, 60)
+frame = None
+running = False
+cap = None
 
 def camera_loop():
-    global frame, running
-    cap = cv2.VideoCapture(0)
+    global frame, running, cap
+
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FPS, 60)
 
     while running:
         ret, f = cap.read()
         if ret:
             frame = f
-        time.sleep(0.001)  # biar CPU ga 100%
 
-    cap.release()
+        time.sleep(0.001)  # biar CPU tidak penuh
+
+    if cap is not None:
+        cap.release()
+
 
 def start_camera():
-    t = threading.Thread(target=camera_loop, daemon=True)
-    t.start()
+    global running
+    if running:  # kalau sudah jalan, jangan start lagi
+        return
+    running = True
+    threading.Thread(target=camera_loop, daemon=True).start()
+
 
 def get_frame():
-    ret, frame = cap.read()
-    if not ret: return None
+    global frame
     return frame
 
+
 def stop_camera():
-    global running
+    global running, cap
     running = False
+    time.sleep(0.1)
+    if cap is not None:
+        cap.release()
