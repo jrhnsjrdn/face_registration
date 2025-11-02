@@ -5,8 +5,7 @@ import cv2
 import threading
 from database import save_face_to_db, load_registered_faces, get_dashboard_stats, init_db
 from face_recog import encode_face, recognize_faces
-from camera import get_frame, release_cam
-import numpy as np
+from camera import get_frame, start_camera
 
 
 class FaceApp:
@@ -15,6 +14,7 @@ class FaceApp:
         self.root = root
         self.root.title("Face Registration & Recognition")
         self.root.geometry("800x650")
+        start_camera()
 
         # Init DB (IMPORTANT)
         init_db()
@@ -91,24 +91,34 @@ class FaceApp:
         self.guest_entry.insert(0, "1")
 
     def stream_camera(self):
+        frame_skip = 0
+
         while True:
             try:
                 frame = get_frame()
                 if frame is None:
                     continue
 
+                # scale kecil untuk speed recognition
                 small = cv2.resize(frame, (0, 0), fx=0.4, fy=0.4)
                 rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
 
-                locs, names, guests = recognize_faces(
-                    rgb, self.known_encodings, self.known_names, self.known_guests
-                )
+                # recognition tiap 3 frame
+                frame_skip += 1
+                if frame_skip % 3 == 0:
+                    locs, names, guests = recognize_faces(
+                        rgb, self.known_encodings, self.known_names, self.known_guests
+                    )
+                    self.last_detect = (locs, names, guests)
 
-                for (top, right, bottom, left), name, g in zip(locs, names, guests):
-                    top, right, bottom, left = int(top / 0.4), int(right / 0.4), int(bottom / 0.4), int(left / 0.4)
-                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                    label = f"{name} ({g})" if name != "Unknown" else "Unknown"
-                    cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # kalau ada last result, gambar bounding box
+                if hasattr(self, "last_detect"):
+                    locs, names, guests = self.last_detect
+                    for (top, right, bottom, left), name, g in zip(locs, names, guests):
+                        top, right, bottom, left = int(top / 0.4), int(right / 0.4), int(bottom / 0.4), int(left / 0.4)
+                        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                        label = f"{name} ({g})" if name != "Unknown" else "Unknown"
+                        cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
                 img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
                 self.video_label.config(image=img)

@@ -8,7 +8,7 @@ def encode_face(frame):
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     # Deteksi wajah
-    face_locations = face_recognition.face_locations(rgb_frame)
+    face_locations = face_recognition.face_locations(rgb_frame, model="hog")
 
     if len(face_locations) != 1:
         return None, None  # Harus 1 wajah saja
@@ -23,7 +23,7 @@ def encode_face(frame):
 
 
 def recognize_faces(rgb_small_frame, known_encodings, known_names, known_guest_counts):
-    face_locations = face_recognition.face_locations(rgb_small_frame)
+    face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
     face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
 
     names, guests = [], []
