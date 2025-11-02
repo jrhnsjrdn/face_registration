@@ -1,44 +1,51 @@
+# camera.py
 import cv2
 import threading
 import time
 
-frame = None
-running = False
-cap = None
+# camera thread stores last_frame in module-global var
+_last_frame = None
+_running = False
 
-def camera_loop():
-    global frame, running, cap
+def _camera_loop(device=0, fps_target=30, queue_putter=None):
+    global _last_frame, _running
+    cap = cv2.VideoCapture(device)
+    # optional tuning:
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    try:
+        cap.set(cv2.CAP_PROP_FPS, fps_target)
+    except Exception:
+        pass
 
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FPS, 60)
+    _running = True
+    while _running:
+        ret, frame = cap.read()
+        if not ret:
+            time.sleep(0.01)
+            continue
 
-    while running:
-        ret, f = cap.read()
-        if ret:
-            frame = f
+        _last_frame = frame
+        # if a frame queue provided, try put non-blocking
+        if queue_putter is not None:
+            try:
+                if not queue_putter.full():
+                    queue_putter.put(frame)
+            except Exception:
+                pass
 
-        time.sleep(0.001)  # biar CPU tidak penuh
+        # slight sleep to avoid busy-loop
+        time.sleep(0.001)
 
-    if cap is not None:
-        cap.release()
+    cap.release()
 
-
-def start_camera():
-    global running
-    if running:  # kalau sudah jalan, jangan start lagi
-        return
-    running = True
-    threading.Thread(target=camera_loop, daemon=True).start()
-
+def start_camera(frame_queue=None, device=0, fps_target=30):
+    t = threading.Thread(target=_camera_loop, args=(device, fps_target, frame_queue), daemon=True)
+    t.start()
+    return t
 
 def get_frame():
-    global frame
-    return frame
-
+    return _last_frame
 
 def stop_camera():
-    global running, cap
-    running = False
-    time.sleep(0.1)
-    if cap is not None:
-        cap.release()
+    global _running
+    _running = False

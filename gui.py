@@ -1,133 +1,206 @@
+# gui.py
 import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
 import cv2
 import threading
-from database import save_face_to_db, load_registered_faces, get_dashboard_stats, init_db
-from face_recog import encode_face, recognize_faces
-from camera import get_frame, start_camera, stop_camera
+import time
+import numpy as np
+from multiprocessing import Process, Queue
 
+from database import init_db, save_face_to_db, load_registered_faces, get_dashboard_stats
+from face_recog import encode_face
+from camera import start_camera, stop_camera, get_frame
+from face_worker import worker
+
+# --- Constants ---
+FRAME_QUEUE_MAX = 4
+RESULT_QUEUE_MAX = 4
+WORKER_RESTART_DELAY = 0.3
 
 class FaceApp:
     def __init__(self, root):
-        self.on_close = None
         self.root = root
-        self.root.title("Face Registration & Recognition")
-        self.root.geometry("800x650")
-        start_camera()
+        self.root.title("Fast Face Attendance System")
+        self.root.geometry("900x720")
 
-        # Init DB (IMPORTANT)
+        # Init DB
         init_db()
 
-        # Dashboard Frame
-        self.dashboard_frame = tk.Frame(root, pady=10)
-        self.dashboard_frame.pack()
-
-        self.total_people_label = tk.Label(self.dashboard_frame, text="Total Tamu Terdaftar: 0", font=("Arial", 12),
-                                           fg="blue")
+        # Top dashboard
+        db_frame = tk.Frame(root)
+        db_frame.pack(pady=6)
+        self.total_people_label = tk.Label(db_frame, text="Total Tamu Terdaftar: 0", font=("Arial", 12), fg="blue")
         self.total_people_label.grid(row=0, column=0, padx=10)
-
-        self.total_guest_label = tk.Label(self.dashboard_frame, text="Total Undangan Keseluruhan: 0",
-                                          font=("Arial", 12), fg="green")
+        self.total_guest_label = tk.Label(db_frame, text="Total Undangan Keseluruhan: 0", font=("Arial", 12), fg="green")
         self.total_guest_label.grid(row=0, column=1, padx=10)
 
+        # Video display
         self.video_label = tk.Label(root)
-        self.video_label.pack()
+        self.video_label.pack(padx=10, pady=6)
 
-        # Input Form
-        tk.Label(root, text="Nama Tamu:").pack()
-        self.name_entry = tk.Entry(root, width=30)
-        self.name_entry.pack()
-
-        tk.Label(root, text="Jumlah Tamu:").pack()
-        self.guest_entry = tk.Entry(root, width=10)
+        # Input form
+        form = tk.Frame(root)
+        form.pack(pady=6)
+        tk.Label(form, text="Nama Tamu:").grid(row=0, column=0, sticky="e")
+        self.name_entry = tk.Entry(form, width=30)
+        self.name_entry.grid(row=0, column=1, padx=6)
+        tk.Label(form, text="Jumlah tamu:").grid(row=1, column=0, sticky="e")
+        self.guest_entry = tk.Entry(form, width=10)
         self.guest_entry.insert(0, "1")
-        self.guest_entry.pack()
+        self.guest_entry.grid(row=1, column=1, padx=6, sticky="w")
+        tk.Button(root, text="📸 Capture & Save", bg="green", fg="white", font=("Arial", 11),
+                  command=self.capture_face).pack(pady=8)
 
-        tk.Button(root, text="📸 Capture & Save", bg="green", fg="white",
-                  command=self.capture_face).pack(pady=10)
-
-        # Load face data
+        # load known faces
         self.known_encodings, self.known_names, self.known_guests = load_registered_faces()
+
+        # queues and worker process placeholders
+        self.frame_queue = Queue(maxsize=FRAME_QUEUE_MAX)
+        self.result_queue = Queue(maxsize=RESULT_QUEUE_MAX)
+        self.worker_proc = None
+
+        # start camera thread (puts frames into frame_queue)
+        start_camera(frame_queue=self.frame_queue, fps_target=60)
+
+        # start worker
+        self.start_worker()
+
+        # GUI state
+        self.last_frame = None
+        self.last_result = None
+
+        # update dashboard and loop
         self.update_dashboard()
+        self.root.after(5, self.update_loop)
 
-        # Start camera thread
-        self.thread = threading.Thread(target=self.stream_camera, daemon=True)
-        self.thread.start()
-
-        # Proper exit handler
+        # proper close
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    # ---------------- worker lifecycle ----------------
+    def start_worker(self):
+        # ensure previous terminated
+        if self.worker_proc is not None and self.worker_proc.is_alive():
+            try:
+                self.worker_proc.terminate()
+                time.sleep(WORKER_RESTART_DELAY)
+            except Exception:
+                pass
+
+        # prepare serializable known_encodings (list of lists)
+        known_enc_serial = [enc.tolist() for enc in self.known_encodings]
+        self.worker_proc = Process(target=worker, args=(
+            self.frame_queue, self.result_queue, known_enc_serial, self.known_names, self.known_guests
+        ), daemon=True)
+        self.worker_proc.start()
+        print("[MAIN] Worker started, PID:", getattr(self.worker_proc, "pid", None))
+
+    def restart_worker_after_db_change(self):
+        # reload known faces then restart worker
+        self.known_encodings, self.known_names, self.known_guests = load_registered_faces()
+        # stop old worker and start new one
+        self.start_worker()
+        # update dashboard
+        self.update_dashboard()
+
+    # ---------------- GUI actions ----------------
     def update_dashboard(self):
         total_people, total_guests = get_dashboard_stats()
         self.total_people_label.config(text=f"Total Tamu Terdaftar: {total_people}")
-        self.total_guest_label.config(text=f"Total Tamu Undangan Keseluruhan: {total_guests}")
-
-    def reload_faces(self):
-        self.known_encodings, self.known_names, self.known_guests = load_registered_faces()
+        self.total_guest_label.config(text=f"Total Undangan Keseluruhan: {total_guests}")
 
     def capture_face(self):
-        frame = get_frame()
-        if frame is None: return
+        # get latest frame (non-blocking)
+        frame = None
+        try:
+            # prefer using last_frame cached if queue empty
+            frame = self.frame_queue.get_nowait()
+        except Exception:
+            frame = get_frame()
+
+        if frame is None:
+            messagebox.showerror("Camera", "Tidak ada frame kamera saat ini. Pastikan kamera terhubung.")
+            return
 
         name = self.name_entry.get().strip()
-        count = self.guest_entry.get().strip()
-
-        if not name or not count.isdigit():
+        guests = self.guest_entry.get().strip()
+        if not name or not guests.isdigit():
             messagebox.showwarning("Invalid", "Isi nama & jumlah tamu valid!")
             return
 
-        encoding, face = encode_face(frame)
+        encoding, face_loc = encode_face(frame)
         if encoding is None:
-            messagebox.showwarning("No Face", "Tidak ada wajah terdeteksi!")
+            messagebox.showwarning("No Face", "Harus tepat 1 wajah yang terlihat untuk pendaftaran.")
             return
 
-        save_face_to_db(name, int(count), encoding)
-        self.root.after(500, self.reload_faces)
-        self.root.after(500, self.update_dashboard)
-        messagebox.showinfo("Success", "Wajah berhasil disimpan!")
+        # save and restart worker to pick new encoding
+        save_face_to_db(name, int(guests), encoding)
+        # reload known encodings and restart worker
+        self.root.after(200, self.restart_worker_after_db_change)
+
+        messagebox.showinfo("Saved", f"Wajah '{name}' ({guests}) tersimpan.")
         self.name_entry.delete(0, tk.END)
         self.guest_entry.delete(0, tk.END)
         self.guest_entry.insert(0, "1")
 
-    def stream_camera(self):
-        frame_skip = 0
+    # ---------------- main GUI loop ----------------
+    def update_loop(self):
+        # try get latest frame from queue without blocking
+        frame = None
+        try:
+            frame = self.frame_queue.get_nowait()
+            self.last_frame = frame
+        except Exception:
+            frame = self.last_frame
 
-        while True:
-            try:
-                frame = get_frame()
-                if frame is None:
-                    continue
+        # try get latest recognition result
+        try:
+            res = self.result_queue.get_nowait()
+            self.last_result = res
+        except Exception:
+            res = None
 
-                # scale kecil untuk speed recognition
-                small = cv2.resize(frame, (0, 0), fx=0.4, fy=0.4)
-                rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        if frame is not None:
+            # draw boxes from last_result (if any)
+            display_frame = frame.copy()
+            if self.last_result is not None:
+                locs, names, guests = self.last_result
+                for (top, right, bottom, left), name, g in zip(locs, names, guests):
+                    # scale coords back to original frame size (small->orig)
+                    # small = 0.4 scale used in worker
+                    top = int(top / 0.4)
+                    right = int(right / 0.4)
+                    bottom = int(bottom / 0.4)
+                    left = int(left / 0.4)
+                    cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                    label = f"{name} ({g})" if name != "Unknown" else "Unknown"
+                    cv2.putText(display_frame, label, (left, top - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-                # recognition tiap 3 frame
-                frame_skip += 1
-                if frame_skip % 3 == 0:
-                    locs, names, guests = recognize_faces(
-                        rgb, self.known_encodings, self.known_names, self.known_guests
-                    )
-                    self.last_detect = (locs, names, guests)
+            # convert BGR->RGB->PIL->ImageTk
+            img = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            im_pil = ImageTk.PhotoImage(Image.fromarray(img))
+            self.video_label.config(image=im_pil)
+            self.video_label.image = im_pil
 
-                # kalau ada last result, gambar bounding box
-                if hasattr(self, "last_detect"):
-                    locs, names, guests = self.last_detect
-                    for (top, right, bottom, left), name, g in zip(locs, names, guests):
-                        top, right, bottom, left = int(top / 0.4), int(right / 0.4), int(bottom / 0.4), int(left / 0.4)
-                        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                        label = f"{name} ({g})" if name != "Unknown" else "Unknown"
-                        cv2.putText(frame, label, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # schedule next loop
+        self.root.after(8, self.update_loop)
 
-                img = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-                self.video_label.config(image=img)
-                self.video_label.image = img
-
-            except Exception as e:
-                print("[ERROR STREAM]", e)
-                continue
-
+    # ---------------- cleanup ----------------
     def on_close(self):
-        stop_camera()
+        try:
+            if self.worker_proc is not None and self.worker_proc.is_alive():
+                self.worker_proc.terminate()
+        except Exception:
+            pass
+        try:
+            stop_camera()
+        except Exception:
+            pass
         self.root.destroy()
+
+#
+# if __name__ == "__main__":
+#     root = tk.Tk()
+#     app = FaceApp(root)
+#     root.mainloop()
