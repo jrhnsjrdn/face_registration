@@ -3,15 +3,15 @@ import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
 import cv2
-import threading
 import time
-import numpy as np
 from multiprocessing import Process, Queue
 
 from database import init_db, save_face_to_db, load_registered_faces, get_dashboard_stats
-from face_recog import encode_face
+from face_recog import encode_face, recognize_faces
 from camera import start_camera, stop_camera, get_frame
 from face_worker import worker
+from face_utils import is_face_duplicate
+
 
 # --- Constants ---
 FRAME_QUEUE_MAX = 4
@@ -123,25 +123,63 @@ class FaceApp:
             return
 
         name = self.name_entry.get().strip()
-        guests = self.guest_entry.get().strip()
-        if not name or not guests.isdigit():
+        count = self.guest_entry.get().strip()
+
+        if not name or not count.isdigit():
             messagebox.showwarning("Invalid", "Isi nama & jumlah tamu valid!")
             return
 
-        encoding, face_loc = encode_face(frame)
-        if encoding is None:
-            messagebox.showwarning("No Face", "Harus tepat 1 wajah yang terlihat untuk pendaftaran.")
+        # --- STEP 1: Cek wajah sudah pernah terdaftar atau belum ---
+        small = cv2.resize(frame, (0, 0), fx=0.4, fy=0.4)
+        rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+
+        locs, names, guests = recognize_faces(
+            rgb_small, self.known_encodings, self.known_names, self.known_guests
+        )
+
+        if len(names) > 0 and names[0] != "Unknown":
+            # Wajah sudah terdaftar → blok simpan
+            messagebox.showwarning(
+                "Sudah Terdaftar",
+                f"Wajah ini sudah terdaftar sebagai '{names[0]}' 🚫"
+            )
             return
 
-        # save and restart worker to pick new encoding
-        save_face_to_db(name, int(guests), encoding)
-        # reload known encodings and restart worker
-        self.root.after(200, self.restart_worker_after_db_change)
+        # --- STEP 2: Encode wajah untuk disimpan (karena baru) ---
+        encoding, face = encode_face(frame)
+        if encoding is None:
+            messagebox.showwarning("No Face", "Tidak ada wajah terdeteksi!")
+            return
 
-        messagebox.showinfo("Saved", f"Wajah '{name}' ({guests}) tersimpan.")
+        # Simpan ke DB
+        save_face_to_db(name, int(count), encoding)
+
+        # Reload database memory
+        self.root.after(500, self.reload_faces)
+        self.root.after(500, self.update_dashboard)
+
+        messagebox.showinfo("Success ✅", "Wajah berhasil disimpan!")
+
         self.name_entry.delete(0, tk.END)
         self.guest_entry.delete(0, tk.END)
         self.guest_entry.insert(0, "1")
+
+    def reload_faces(self):
+        """
+        Reload data wajah dari DB dan restart worker agar model update.
+        """
+        try:
+            # load encodings & names again from DB
+            self.known_encodings, self.known_names, self.known_guests = load_registered_faces()
+
+            print(f"[MAIN] Reloaded faces: {len(self.known_names)} registered")
+
+            # restart worker so new encodings are used
+            self.start_worker()
+            self.update_dashboard()
+
+        except Exception as e:
+            print("reload_faces error:", e)
 
     # ---------------- main GUI loop ----------------
     def update_loop(self):
